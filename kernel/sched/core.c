@@ -7978,7 +7978,7 @@ void sched_move_task(struct task_struct *tsk)
 
 	if (queued)
 		enqueue_task(rq, tsk, queue_flags);
-	if (running)
+	if (running) {
 		set_next_task(rq, tsk);
 		/*
 		 * After changing group, the running task may have joined a
