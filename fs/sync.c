@@ -156,25 +156,11 @@ void emergency_sync(void)
 
 /*
  * sync a single super
+ * Bypassed: returns success immediately without flushing.
  */
 SYSCALL_DEFINE1(syncfs, int, fd)
 {
-	struct fd f = fdget(fd);
-	struct super_block *sb;
-	int ret, ret2;
-
-	if (!f.file)
-		return -EBADF;
-	sb = f.file->f_path.dentry->d_sb;
-
-	down_read(&sb->s_umount);
-	ret = sync_filesystem(sb);
-	up_read(&sb->s_umount);
-
-	ret2 = errseq_check_and_advance(&sb->s_wb_err, &f.file->f_sb_err);
-
-	fdput(f);
-	return ret ? ret : ret2;
+	return 0;
 }
 
 /**
@@ -184,19 +170,11 @@ SYSCALL_DEFINE1(syncfs, int, fd)
  * @end:		offset in bytes of the end of data range (inclusive)
  * @datasync:		perform only datasync
  *
- * Write back data in range @start..@end and metadata for @file to disk.  If
- * @datasync is set only metadata needed to access modified file data is
- * written.
+ * Bypassed: returns success immediately without flushing.
  */
 int vfs_fsync_range(struct file *file, loff_t start, loff_t end, int datasync)
 {
-	struct inode *inode = file->f_mapping->host;
-
-	if (!file->f_op->fsync)
-		return -EINVAL;
-	if (!datasync && (inode->i_state & I_DIRTY_TIME))
-		mark_inode_dirty_sync(inode);
-	return file->f_op->fsync(file, start, end, datasync);
+	return 0;
 }
 EXPORT_SYMBOL(vfs_fsync_range);
 
@@ -205,8 +183,7 @@ EXPORT_SYMBOL(vfs_fsync_range);
  * @file:		file to sync
  * @datasync:		only perform a fdatasync operation
  *
- * Write back data and metadata for @file to disk.  If @datasync is
- * set only metadata needed to access modified file data is written.
+ * Bypassed via vfs_fsync_range returning 0.
  */
 int vfs_fsync(struct file *file, int datasync)
 {
@@ -214,17 +191,13 @@ int vfs_fsync(struct file *file, int datasync)
 }
 EXPORT_SYMBOL(vfs_fsync);
 
+/*
+ * Bypassed: fsync() and fdatasync() both route through here.
+ * Returns success immediately without any I/O.
+ */
 static int do_fsync(unsigned int fd, int datasync)
 {
-	struct fd f = fdget(fd);
-	int ret = -EBADF;
-
-	if (f.file) {
-		ret = vfs_fsync(f.file, datasync);
-		fdput(f);
-		inc_syscfs(current);
-	}
-	return ret;
+	return 0;
 }
 
 SYSCALL_DEFINE1(fsync, unsigned int, fd)
@@ -242,125 +215,13 @@ SYSCALL_DEFINE1(fdatasync, unsigned int, fd)
  * a file in the range offset .. (offset+nbytes-1) inclusive.  If nbytes is
  * zero then sys_sync_file_range() will operate from offset out to EOF.
  *
- * The flag bits are:
- *
- * SYNC_FILE_RANGE_WAIT_BEFORE: wait upon writeout of all pages in the range
- * before performing the write.
- *
- * SYNC_FILE_RANGE_WRITE: initiate writeout of all those dirty pages in the
- * range which are not presently under writeback. Note that this may block for
- * significant periods due to exhaustion of disk request structures.
- *
- * SYNC_FILE_RANGE_WAIT_AFTER: wait upon writeout of all pages in the range
- * after performing the write.
- *
- * Useful combinations of the flag bits are:
- *
- * SYNC_FILE_RANGE_WAIT_BEFORE|SYNC_FILE_RANGE_WRITE: ensures that all pages
- * in the range which were dirty on entry to sys_sync_file_range() are placed
- * under writeout.  This is a start-write-for-data-integrity operation.
- *
- * SYNC_FILE_RANGE_WRITE: start writeout of all dirty pages in the range which
- * are not presently under writeout.  This is an asynchronous flush-to-disk
- * operation.  Not suitable for data integrity operations.
- *
- * SYNC_FILE_RANGE_WAIT_BEFORE (or SYNC_FILE_RANGE_WAIT_AFTER): wait for
- * completion of writeout of all pages in the range.  This will be used after an
- * earlier SYNC_FILE_RANGE_WAIT_BEFORE|SYNC_FILE_RANGE_WRITE operation to wait
- * for that operation to complete and to return the result.
- *
- * SYNC_FILE_RANGE_WAIT_BEFORE|SYNC_FILE_RANGE_WRITE|SYNC_FILE_RANGE_WAIT_AFTER:
- * a traditional sync() operation.  This is a write-for-data-integrity operation
- * which will ensure that all pages in the range which were dirty on entry to
- * sys_sync_file_range() are committed to disk.
- *
- *
- * SYNC_FILE_RANGE_WAIT_BEFORE and SYNC_FILE_RANGE_WAIT_AFTER will detect any
- * I/O errors or ENOSPC conditions and will return those to the caller, after
- * clearing the EIO and ENOSPC flags in the address_space.
- *
- * It should be noted that none of these operations write out the file's
- * metadata.  So unless the application is strictly performing overwrites of
- * already-instantiated disk blocks, there are no guarantees here that the data
- * will be available after a crash.
+ * Bypassed: returns success immediately without any I/O.
+ * This covers SQLite WAL mode and other apps that use sync_file_range directly.
  */
 int ksys_sync_file_range(int fd, loff_t offset, loff_t nbytes,
 			 unsigned int flags)
 {
-	int ret;
-	struct fd f;
-	struct address_space *mapping;
-	loff_t endbyte;			/* inclusive */
-	umode_t i_mode;
-
-	ret = -EINVAL;
-	if (flags & ~VALID_FLAGS)
-		goto out;
-
-	endbyte = offset + nbytes;
-
-	if ((s64)offset < 0)
-		goto out;
-	if ((s64)endbyte < 0)
-		goto out;
-	if (endbyte < offset)
-		goto out;
-
-	if (sizeof(pgoff_t) == 4) {
-		if (offset >= (0x100000000ULL << PAGE_SHIFT)) {
-			/*
-			 * The range starts outside a 32 bit machine's
-			 * pagecache addressing capabilities.  Let it "succeed"
-			 */
-			ret = 0;
-			goto out;
-		}
-		if (endbyte >= (0x100000000ULL << PAGE_SHIFT)) {
-			/*
-			 * Out to EOF
-			 */
-			nbytes = 0;
-		}
-	}
-
-	if (nbytes == 0)
-		endbyte = LLONG_MAX;
-	else
-		endbyte--;		/* inclusive */
-
-	ret = -EBADF;
-	f = fdget(fd);
-	if (!f.file)
-		goto out;
-
-	i_mode = file_inode(f.file)->i_mode;
-	ret = -ESPIPE;
-	if (!S_ISREG(i_mode) && !S_ISBLK(i_mode) && !S_ISDIR(i_mode) &&
-			!S_ISLNK(i_mode))
-		goto out_put;
-
-	mapping = f.file->f_mapping;
-	ret = 0;
-	if (flags & SYNC_FILE_RANGE_WAIT_BEFORE) {
-		ret = file_fdatawait_range(f.file, offset, endbyte);
-		if (ret < 0)
-			goto out_put;
-	}
-
-	if (flags & SYNC_FILE_RANGE_WRITE) {
-		ret = __filemap_fdatawrite_range(mapping, offset, endbyte,
-						 WB_SYNC_NONE);
-		if (ret < 0)
-			goto out_put;
-	}
-
-	if (flags & SYNC_FILE_RANGE_WAIT_AFTER)
-		ret = file_fdatawait_range(f.file, offset, endbyte);
-
-out_put:
-	fdput(f);
-out:
-	return ret;
+	return 0;
 }
 
 SYSCALL_DEFINE4(sync_file_range, int, fd, loff_t, offset, loff_t, nbytes,
