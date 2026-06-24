@@ -8722,7 +8722,7 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
 	 * Ignore wakee preemption on WF_FORK as it is less likely that
 	 * there is shared data as exec often follow fork.
 	 */
-	if (wake_flags & WF_FORK)
+	if ((wake_flags & WF_FORK) || pse->sched_delayed)
 		goto update;
 
 	/* Prefer picking wakee soon if appropriate. */
