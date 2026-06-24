@@ -8767,7 +8767,11 @@ pick:
 	 */
 	if (preempt_action == PREEMPT_WAKEUP_SHORT && entity_eligible(cfs_rq, pse))
 		goto preempt;
+<<<<<<< HEAD
 update:
+=======
+
+>>>>>>> 71c338c44e8d (sched/eevdf: Cancel slice protection if short slice task is eligible)
 	if (sched_feat(RUN_TO_PARITY))
 		update_protect_slice(cfs_rq, se);
 
